@@ -1,0 +1,20 @@
+#secrets
+.env
+
+#data
+data/
+
+#artifacts
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+node_modules/
+dist/
+
+#mac and vscode files
+.DS_Store
+.vscode/settings.json
+
+#python packages
+*.egg-info/
