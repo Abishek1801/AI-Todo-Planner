@@ -1,0 +1,180 @@
+# ─────────────────────────────────────────────────────────────────
+# AI Todo — Docker Compose
+# ─────────────────────────────────────────────────────────────────
+# Runs all 6 services with one command: docker compose up
+# All services communicate over ai-todo-network by service name
+# Data is persisted in ./data/* folders on your Mac
+# ─────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+
+  # ── 1. PostgreSQL ───────────────────────────────────────────────
+  # Structured database — stores users, todos, sessions
+  # Accessible from your Mac at localhost:5432
+  # Use TablePlus or pgAdmin to inspect it visually
+  postgres:
+    image: postgres:16
+    container_name: aitodo_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      # Persist database files on your Mac so data survives restarts
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready checks if postgres is accepting connections
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - ai-todo-network
+
+
+  # ── 2. Neo4j ────────────────────────────────────────────────────
+  # Graph database — stores the memory graph (tasks, people, goals)
+  # Browser UI at localhost:7474 — log in with your NEO4J_USER/PASSWORD
+  # App connects via bolt protocol on port 7687
+  # platform: linux/amd64 is required for Apple Silicon (M1/M2/M3/M4)
+  neo4j:
+    image: neo4j:5-community
+    container_name: aitodo_neo4j
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      # NEO4J_AUTH format must be "username/password" as one string
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      # Disable authentication requirement for local development
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474"   # Neo4j browser UI
+      - "7687:7687"   # Bolt protocol — how your app talks to Neo4j
+    volumes:
+      - ./data/neo4j:/data
+    healthcheck:
+      # Hits the Neo4j browser endpoint — if it responds, Neo4j is ready
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - ai-todo-network
+
+
+  # ── 3. Redis ────────────────────────────────────────────────────
+  # Job queue + short-term cache
+  # Celery reads jobs from here, results are cached here
+  # alpine = minimal Linux image, keeps the container small
+  # No volume — Redis data is ephemeral (just a queue, not source of truth)
+  redis:
+    image: redis:7-alpine
+    container_name: aitodo_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      # redis-cli ping returns PONG when Redis is ready
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - ai-todo-network
+
+
+  # ── 4. ChromaDB ─────────────────────────────────────────────────
+  # Vector database — stores embeddings for semantic search
+  # Chroma runs on port 8000 internally
+  # We map it to 8001 on your Mac to avoid clashing with FastAPI (8000)
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: aitodo_chroma
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    volumes:
+      # Persist vector data so embeddings survive restarts
+      - ./data/chroma:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - ai-todo-network
+
+
+  # ── 5. API (FastAPI) ────────────────────────────────────────────
+  # Your FastAPI backend — the brain of the system
+  # Built from ./backend/Dockerfile
+  # Volume mounts your code live — code changes reflect without rebuilding
+  # Does NOT start until postgres, neo4j, redis, chroma are all healthy
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aitodo_api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Live code reload — edit code on Mac, container sees changes instantly
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    networks:
+      - ai-todo-network
+
+
+  # ── 6. Frontend (React + Vite) ──────────────────────────────────
+  # Your React frontend — served by Vite dev server in development
+  # Built from ./frontend/Dockerfile
+  # Volume mounts your code live — changes hot-reload in the browser
+  # Does NOT start until the api is running
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aitodo_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      # Live reload — edit React code, browser updates instantly
+      - ./frontend:/app
+      # Prevents node_modules on your Mac from overriding the container's
+      - /app/node_modules
+    depends_on:
+      - api
+    networks:
+      - ai-todo-network
+
+
+# ─────────────────────────────────────────────────────────────────
+# Network
+# ─────────────────────────────────────────────────────────────────
+# One shared private network for all services
+# Containers find each other by service name — not localhost
+# Example: api connects to postgres at "postgres:5432" not "localhost:5432"
+networks:
+  ai-todo-network:
+    driver: bridge
