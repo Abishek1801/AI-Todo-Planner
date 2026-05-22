@@ -6,7 +6,6 @@
 # Data is persisted in ./data/* folders on your Mac
 # ─────────────────────────────────────────────────────────────────
 
-version: "3.9"
 
 services:
 
@@ -103,14 +102,7 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      # Persist vector data so embeddings survive restarts
       - ./data/chroma:/chroma/chroma
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
     networks:
       - ai-todo-network
 
@@ -140,7 +132,7 @@ services:
       redis:
         condition: service_healthy
       chroma:
-        condition: service_healthy
+        condition: service_started
     networks:
       - ai-todo-network
 
